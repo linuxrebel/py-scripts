@@ -1,7 +1,8 @@
 #!/usr/bin/python
 
-import sys
 import os
+import sys
+import time
 
 def list_files_and_directories(path, show_hidden=False, verbose=False):
     entries = os.listdir(path)
@@ -24,7 +25,8 @@ def list_files_and_directories(path, show_hidden=False, verbose=False):
             print(entry)
 
 if __name__ == "__main__":
-    path = os.path.expanduser("$HOME/JamesOne")
+    # path = os.path.expanduser("$HOME")  # Remove this line and replace with the following two lines
+    path = os.getcwd()  
     if len(sys.argv) > 1:
         if sys.argv[1] == "-a":
             list_files_and_directories(path, show_hidden=True)
@@ -34,4 +36,3 @@ if __name__ == "__main__":
             print("Invalid arguments. Use -a to include hidden files/directories or -l for detailed info.")
     else:
         list_files_and_directories(path)
-
