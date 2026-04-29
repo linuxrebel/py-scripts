@@ -1,0 +1,5 @@
+Create a python script called ls.py and saved to the directory $HOME/james/JamesOne. This file should be able to list all files and directories in the current directory it is called from . If you add a “-a” switch to the command line it should then include the names of all files and directories that begin with a leading “.” . If the switch “-l” is given it will give the following info on each file or directory (in this order) Permissions (Example drwxr-xr-x), owner, group, file sie in kb, date-time stamp for creation and the file/directory name
+
+1) #!/usr/bin/python
+2) import sys
+Now on line 27 it has the following issues First the script doesn’t understand that $HOME is a variable to be expanded to /home/james. Second it appears it will only list files in that folder not the current directory the person calling the script is in.
