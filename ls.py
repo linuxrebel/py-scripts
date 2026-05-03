@@ -7,7 +7,7 @@ import stat
 import pwd
 import grp
 
-def list_files_and_directories(path, show_hidden=False, verbose=False):
+def list_files_and_directories(path, show_hidden=False, verbose=False, columns=4):
     entries = os.listdir(path)
 
     if not show_hidden:
@@ -55,8 +55,12 @@ def list_files_and_directories(path, show_hidden=False, verbose=False):
         for mode_str, nlink, owner, group, size, date_str, entry in rows:
             print(f"{mode_str} {nlink:{max_nlink}} {owner:{max_owner}} {group:{max_group}} {size:{max_size}} {date_str} {entry}")
     else:
-        for entry in entries:
-            print(entry)
+        if not entries:
+            return
+        col_width = max(len(e) for e in entries) + 2  # 2-space padding between columns
+        rows = [entries[i:i + columns] for i in range(0, len(entries), columns)]
+        for row in rows:
+            print(''.join(f"{entry:<{col_width}}" for entry in row))
 
 def get_rwx(mode):
     # File type character
@@ -101,21 +105,50 @@ def get_rwx(mode):
 
     return f"{ftype}{ur}{uw}{ux}{gr}{gw}{gx}{or_}{ow}{ox}"
 
+def print_help():
+    print("usage: pyls [-h] [-a] [-l] [-C [COLUMNS]]  [path]")
+    print("List files and directories in a given path")
+    print()
+    print("positional arguments:")
+    print("  path                  The path to list (default: current directory)")
+    print()
+    print("options:")
+    print("  -h, --help            Show this help message and exit")
+    print("  -a, --all             Include hidden files and directories")
+    print("  -l, --long            Show full information for each item")
+    print("  -C, --columns [N]     Number of columns for output (default: 4)")
+
 if __name__ == "__main__":
     path = os.getcwd()
     show_hidden = False
     verbose = False
+    columns = 4
 
-    for arg in sys.argv[1:]:
-        if arg == "-a":
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-h", "--help"):
+            print_help()
+            sys.exit(0)
+        elif arg == "-a":
             show_hidden = True
         elif arg == "-l":
             verbose = True
-        elif arg == "-la" or arg == "-al":
+        elif arg in ("-la", "-al"):
             show_hidden = True
             verbose = True
+        elif arg == "-C":
+            # Optional column count: -C alone uses default 4, -C <N> sets N columns
+            if i + 1 < len(args) and args[i + 1].isdigit():
+                i += 1
+                columns = int(args[i])
+                if columns < 1:
+                    print("Error: column count must be at least 1.")
+                    sys.exit(1)
         else:
-            print(f"Invalid argument: {arg}. Use -a to include hidden files/directories or -l for detailed info.")
+            print(f"Invalid argument: {arg}. Use -h for usage information.")
             sys.exit(1)
+        i += 1
 
-    list_files_and_directories(path, show_hidden=show_hidden, verbose=verbose)
+    list_files_and_directories(path, show_hidden=show_hidden, verbose=verbose, columns=columns)
