@@ -18,13 +18,13 @@ def list_files_and_directories(path, show_hidden=False, verbose=False, columns=4
         total_blocks = 0
         for entry in entries:
             entry_path = os.path.join(path, entry)
-            total_blocks += os.stat(entry_path).st_blocks
+            total_blocks += os.lstat(entry_path).st_blocks
         print(f"total {total_blocks // 2}")
 
         rows = []
         for entry in entries:
             entry_path = os.path.join(path, entry)
-            st = os.stat(entry_path)
+            st = os.lstat(entry_path)
             mode_str = get_rwx(st.st_mode)
             nlink = st.st_nlink
             try:
