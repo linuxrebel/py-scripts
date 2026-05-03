@@ -4,6 +4,8 @@ import os
 import sys
 import time
 import stat
+import pwd
+import grp
 
 def list_files_and_directories(path, show_hidden=False, verbose=False):
     entries = os.listdir(path)
@@ -25,8 +27,14 @@ def list_files_and_directories(path, show_hidden=False, verbose=False):
             st = os.stat(entry_path)
             mode_str = get_rwx(st.st_mode)
             nlink = st.st_nlink
-            owner = st.st_uid
-            group = st.st_gid
+            try:
+                owner = pwd.getpwuid(st.st_uid).pw_name
+            except KeyError:
+                owner = str(st.st_uid)
+            try:
+                group = grp.getgrgid(st.st_gid).gr_name
+            except KeyError:
+                group = str(st.st_gid)
             size = st.st_size
             # Match ls date format: "Mon DD HH:MM" (no year if current year)
             mtime = st.st_mtime
