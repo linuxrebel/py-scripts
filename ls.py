@@ -1,112 +1,146 @@
 #!/usr/bin/python
 
+import grp
 import os
+import pwd
+import stat
 import sys
 import time
-import stat
-import pwd
-import grp
+
 
 def list_files_and_directories(path, show_hidden=False, verbose=False, columns=4):
-    entries = os.listdir(path)
-
-    if not show_hidden:
-        entries = [entry for entry in entries if not os.path.basename(entry).startswith(".")]
+    try:
+        with os.scandir(path) as it:
+            entries = [entry for entry in it if show_hidden or not entry.name.startswith(".")]
+    except OSError as exc:
+        print(f"Error reading {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if verbose:
-        # Compute block count (ls uses 512-byte blocks internally, displays in 1K blocks)
-        total_blocks = 0
-        for entry in entries:
-            entry_path = os.path.join(path, entry)
-            total_blocks += os.lstat(entry_path).st_blocks
-        print(f"total {total_blocks // 2}")
-
-        rows = []
-        for entry in entries:
-            entry_path = os.path.join(path, entry)
-            st = os.lstat(entry_path)
-            mode_str = get_rwx(st.st_mode)
-            nlink = st.st_nlink
-            try:
-                owner = pwd.getpwuid(st.st_uid).pw_name
-            except KeyError:
-                owner = str(st.st_uid)
-            try:
-                group = grp.getgrgid(st.st_gid).gr_name
-            except KeyError:
-                group = str(st.st_gid)
-            size = st.st_size
-            # Match ls date format: "Mon DD HH:MM" (no year if current year)
-            mtime = st.st_mtime
-            t = time.localtime(mtime)
-            current_year = time.localtime().tm_year
-            if t.tm_year == current_year:
-                date_str = time.strftime("%b %e %H:%M", t)
-            else:
-                date_str = time.strftime("%b %e  %Y", t)
-            rows.append((mode_str, nlink, owner, group, size, date_str, entry))
-
-        # Align columns like ls -l
-        max_nlink = max(len(str(r[1])) for r in rows)
-        max_owner = max(len(str(r[2])) for r in rows)
-        max_group = max(len(str(r[3])) for r in rows)
-        max_size  = max(len(str(r[4])) for r in rows)
-
-        for mode_str, nlink, owner, group, size, date_str, entry in rows:
-            print(f"{mode_str} {nlink:{max_nlink}} {owner:{max_owner}} {group:{max_group}} {size:{max_size}} {date_str} {entry}")
+        print_verbose(entries)
     else:
-        if not entries:
-            return
-        col_width = max(len(e) for e in entries) + 2  # 2-space padding between columns
-        rows = [entries[i:i + columns] for i in range(0, len(entries), columns)]
-        for row in rows:
-            print(''.join(f"{entry:<{col_width}}" for entry in row))
+        print_columns(entries, columns)
+
+
+def print_verbose(entries):
+    if not entries:
+        print("total 0")
+        return
+
+    uid_cache = {}
+    gid_cache = {}
+    current_year = time.localtime().tm_year
+    rows = []
+    total_blocks = 0
+
+    for entry in entries:
+        st = entry.stat(follow_symlinks=False)
+        total_blocks += st.st_blocks
+        rows.append(
+            (
+                get_rwx(st.st_mode),
+                st.st_nlink,
+                lookup_owner(st.st_uid, uid_cache),
+                lookup_group(st.st_gid, gid_cache),
+                st.st_size,
+                format_mtime(st.st_mtime, current_year),
+                entry.name,
+            )
+        )
+
+    print(f"total {total_blocks // 2}")
+
+    max_nlink = max(len(str(row[1])) for row in rows)
+    max_owner = max(len(row[2]) for row in rows)
+    max_group = max(len(row[3]) for row in rows)
+    max_size = max(len(str(row[4])) for row in rows)
+
+    for mode_str, nlink, owner, group, size, date_str, name in rows:
+        print(
+            f"{mode_str} {nlink:{max_nlink}} {owner:{max_owner}} "
+            f"{group:{max_group}} {size:{max_size}} {date_str} {name}"
+        )
+
+
+def print_columns(entries, columns):
+    if not entries:
+        return
+
+    names = [entry.name for entry in entries]
+    col_width = max(len(name) for name in names) + 2
+    for start in range(0, len(names), columns):
+        row = names[start:start + columns]
+        print("".join(f"{name:<{col_width}}" for name in row))
+
+
+def lookup_owner(uid, cache):
+    owner = cache.get(uid)
+    if owner is None:
+        try:
+            owner = pwd.getpwuid(uid).pw_name
+        except KeyError:
+            owner = str(uid)
+        cache[uid] = owner
+    return owner
+
+
+def lookup_group(gid, cache):
+    group = cache.get(gid)
+    if group is None:
+        try:
+            group = grp.getgrgid(gid).gr_name
+        except KeyError:
+            group = str(gid)
+        cache[gid] = group
+    return group
+
+
+def format_mtime(mtime, current_year):
+    t = time.localtime(mtime)
+    if t.tm_year == current_year:
+        return time.strftime("%b %e %H:%M", t)
+    return time.strftime("%b %e  %Y", t)
+
 
 def get_rwx(mode):
-    # File type character
     if stat.S_ISDIR(mode):
-        ftype = 'd'
+        ftype = "d"
     elif stat.S_ISLNK(mode):
-        ftype = 'l'
+        ftype = "l"
     elif stat.S_ISFIFO(mode):
-        ftype = 'p'
+        ftype = "p"
     elif stat.S_ISSOCK(mode):
-        ftype = 's'
+        ftype = "s"
     elif stat.S_ISBLK(mode):
-        ftype = 'b'
+        ftype = "b"
     elif stat.S_ISCHR(mode):
-        ftype = 'c'
+        ftype = "c"
     else:
-        ftype = '-'
+        ftype = "-"
 
-    # Owner
-    ur = 'r' if mode & stat.S_IRUSR else '-'
-    uw = 'w' if mode & stat.S_IWUSR else '-'
-    ux = 'x' if mode & stat.S_IXUSR else '-'
-    # setuid
+    ur = "r" if mode & stat.S_IRUSR else "-"
+    uw = "w" if mode & stat.S_IWUSR else "-"
+    ux = "x" if mode & stat.S_IXUSR else "-"
     if mode & stat.S_ISUID:
-        ux = 's' if mode & stat.S_IXUSR else 'S'
+        ux = "s" if mode & stat.S_IXUSR else "S"
 
-    # Group
-    gr = 'r' if mode & stat.S_IRGRP else '-'
-    gw = 'w' if mode & stat.S_IWGRP else '-'
-    gx = 'x' if mode & stat.S_IXGRP else '-'
-    # setgid
+    gr = "r" if mode & stat.S_IRGRP else "-"
+    gw = "w" if mode & stat.S_IWGRP else "-"
+    gx = "x" if mode & stat.S_IXGRP else "-"
     if mode & stat.S_ISGID:
-        gx = 's' if mode & stat.S_IXGRP else 'S'
+        gx = "s" if mode & stat.S_IXGRP else "S"
 
-    # Other
-    or_ = 'r' if mode & stat.S_IROTH else '-'
-    ow  = 'w' if mode & stat.S_IWOTH else '-'
-    ox  = 'x' if mode & stat.S_IXOTH else '-'
-    # sticky bit
+    or_ = "r" if mode & stat.S_IROTH else "-"
+    ow = "w" if mode & stat.S_IWOTH else "-"
+    ox = "x" if mode & stat.S_IXOTH else "-"
     if mode & stat.S_ISVTX:
-        ox = 't' if mode & stat.S_IXOTH else 'T'
+        ox = "t" if mode & stat.S_IXOTH else "T"
 
     return f"{ftype}{ur}{uw}{ux}{gr}{gw}{gx}{or_}{ow}{ox}"
 
+
 def print_help():
-    print("usage: pyls [-h] [-a] [-l] [-C [COLUMNS]]  [path]")
+    print("usage: pyls [-h] [-a] [-l] [-C [COLUMNS]] [path]")
     print("List files and directories in a given path")
     print()
     print("positional arguments:")
@@ -117,6 +151,7 @@ def print_help():
     print("  -a, --all             Include hidden files and directories")
     print("  -l, --long            Show full information for each item")
     print("  -C, --columns [N]     Number of columns for output (default: 4)")
+
 
 if __name__ == "__main__":
     path = os.getcwd()
@@ -131,7 +166,7 @@ if __name__ == "__main__":
         if arg in ("-h", "--help"):
             print_help()
             sys.exit(0)
-        elif arg == "-a":
+        if arg == "-a":
             show_hidden = True
         elif arg == "-l":
             verbose = True
@@ -139,16 +174,24 @@ if __name__ == "__main__":
             show_hidden = True
             verbose = True
         elif arg == "-C":
-            # Optional column count: -C alone uses default 4, -C <N> sets N columns
             if i + 1 < len(args) and args[i + 1].isdigit():
                 i += 1
                 columns = int(args[i])
                 if columns < 1:
                     print("Error: column count must be at least 1.")
                     sys.exit(1)
-        else:
+        elif arg.startswith("-"):
             print(f"Invalid argument: {arg}. Use -h for usage information.")
             sys.exit(1)
+        else:
+            path = arg
         i += 1
 
-    list_files_and_directories(path, show_hidden=show_hidden, verbose=verbose, columns=columns)
+    try:
+        list_files_and_directories(path, show_hidden=show_hidden, verbose=verbose, columns=columns)
+    except BrokenPipeError:
+        # Downstream consumers like less/head may stop early; exit quietly.
+        sys.stdout = None
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)
