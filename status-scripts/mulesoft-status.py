@@ -1,46 +1,45 @@
+#!/usr/bin/python
+
 import requests
+from bs4 import BeautifulSoup
 import sys
 
 verbose = sys.argv[1] if len(sys.argv) > 1 else "z"
 
-def get_github_status_components():
-    url = 'https://status.mulesoft.com/'
+
+def get_mulesoft_status_components():
+    url = 'https://status.mulesoft.com'
 
     try:
-        _extracted_from_get_github_status_components_5(url)
+        response = requests.get(url)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        components = soup.find_all('div', attrs={'data-component-id': True})
+
+        non_operational_components = []
+        all_components = []
+        for component in components:
+            name_span = component.find('span', class_='name')
+            status_span = component.find('span', class_='component-status')
+            name = name_span.text.strip() if name_span else 'No Name'
+            status = status_span.text.strip() if status_span else 'No Status'
+            all_components.append((name, status))
+            if status.lower() != "operational":
+                non_operational_components.append((name, status))
+
+        if verbose == "-v":
+            for name, status in all_components:
+                print(f"{name}\n   Status: {status}\n")
+        elif non_operational_components:
+            for name, status in non_operational_components:
+                print(f"Component: {name}, Status: {status}")
+        else:
+            print("All systems at MuleSoft are Green")
+
     except requests.exceptions.RequestException as e:
         print(f"Error fetching data: {e}")
-    except KeyError:
-        print("Error parsing data. API response might have changed.")
 
-
-# TODO Rename this here and in `get_github_status_components`
-def _extracted_from_get_github_status_components_5(url):
-    response = requests.get(url)
-    response.raise_for_status()
-    data = response.json()
-
-    components_data = data['components'][:13]  # Get components 0 through 12
-
-    non_operational_components = []
-    for component in components_data:
-        name = component['name']
-        status = component['status']
-        if status != "operational":
-            non_operational_components.append((name, status))
-
-    if verbose == "-v":
-        for component in components_data:
-            name = component['name']
-            status = component['status']
-            print(f"{name}\n   Status: {status}\n")
-    elif non_operational_components:
-        for component in non_operational_components:
-            name, status = component
-            print(f"Component: {name}, Status: {status}")
-    else:
-        overall_status_description = data['status']['description']
-        print(f"Status: {overall_status_description}")
 
 if __name__ == "__main__":
-    get_github_status_components()
+    get_mulesoft_status_components()
