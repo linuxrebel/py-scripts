@@ -78,6 +78,28 @@ def list_files_and_directories(path, show_hidden=False, verbose=False,
                                 sort_by="name", group_dirs_first=False,
                                 reverse=False, recursive=False, classify=False,
                                 dirs_only=False):
+    # -d: show the path itself as a single entry, don't scan its contents
+    if dirs_only:
+        try:
+            st = os.stat(path, follow_symlinks=False)
+        except OSError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        indicator = type_indicator(st.st_mode) if classify else ""
+        colored = colorize_name(path, st.st_mode)
+        if verbose:
+            uid_cache, gid_cache = {}, {}
+            current_year = time.localtime().tm_year
+            mode_str = get_rwx(st.st_mode)
+            owner = lookup_owner(st.st_uid, uid_cache)
+            group = lookup_group(st.st_gid, gid_cache)
+            size_str = format_size(st.st_size) if human_readable else str(st.st_size)
+            date_str = format_mtime(st.st_mtime, current_year)
+            print(f"{mode_str} {st.st_nlink} {owner} {group} {size_str} {date_str} {colored}{indicator}")
+        else:
+            print(f"{colored}{indicator}")
+        return
+
     def _list_one(current_path, label, first=True):
         try:
             with os.scandir(current_path) as it:
@@ -85,9 +107,6 @@ def list_files_and_directories(path, show_hidden=False, verbose=False,
         except OSError as exc:
             print(f"Error reading {current_path}: {exc}", file=sys.stderr)
             return
-
-        if dirs_only:
-            entries = [e for e in entries if e.is_dir(follow_symlinks=False)]
 
         entries = sort_entries(entries, sort_by, group_dirs_first, reverse=reverse)
 
@@ -290,7 +309,7 @@ def print_help():
     print("  -F                         Append a type indicator to each name:")
     print("                               /  directory    *  executable")
     print("                               @  symlink      |  named pipe    =  socket")
-    print("  -d                         List only directories, not their contents")
+    print("  -d                         Show the directory itself, not its contents")
     print("  -t                         Sort by modification time, newest first")
     print("  -S                         Sort by file size, largest first")
     print("  -r                         Reverse the sort order")
