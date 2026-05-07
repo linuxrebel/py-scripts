@@ -19,12 +19,12 @@ _BLK    = "\033[1;33m"   # bold yellow  — block devices
 _CHR    = "\033[1;33m"   # bold yellow  — character devices
 
 
-def use_color():
-    return sys.stdout.isatty()
+# Evaluated once at startup; avoids repeated isatty() syscalls per entry.
+_USE_COLOR = sys.stdout.isatty()
 
 
 def colorize_name(name, mode):
-    if not use_color():
+    if not _USE_COLOR:
         return name
     if stat.S_ISDIR(mode):
         return f"{_DIR}{name}{_RESET}"
@@ -164,6 +164,7 @@ def print_verbose(entries, human_readable=False, classify=False):
     for entry in entries:
         st = entry.stat(follow_symlinks=False)
         total_blocks += st.st_blocks
+        link_target = os.readlink(entry.path) if stat.S_ISLNK(st.st_mode) else None
         rows.append(
             (
                 get_rwx(st.st_mode),
@@ -174,6 +175,7 @@ def print_verbose(entries, human_readable=False, classify=False):
                 format_mtime(st.st_mtime, current_year),
                 entry.name,
                 st.st_mode,
+                link_target,
             )
         )
 
@@ -186,21 +188,23 @@ def print_verbose(entries, human_readable=False, classify=False):
     if human_readable:
         size_strs = [format_size(row[4]) for row in rows]
         max_size = max(len(s) for s in size_strs)
-        for (mode_str, nlink, owner, group, size, date_str, name, file_mode), size_str in zip(rows, size_strs):
+        for (mode_str, nlink, owner, group, size, date_str, name, file_mode, link_target), size_str in zip(rows, size_strs):
             colored = colorize_name(name, file_mode)
             indicator = type_indicator(file_mode) if classify else ""
+            suffix = f" -> {link_target}" if link_target is not None else ""
             print(
                 f"{mode_str} {nlink:{max_nlink}} {owner:{max_owner}} "
-                f"{group:{max_group}} {size_str:>{max_size}} {date_str} {colored}{indicator}"
+                f"{group:{max_group}} {size_str:>{max_size}} {date_str} {colored}{indicator}{suffix}"
             )
     else:
         max_size = max(len(str(row[4])) for row in rows)
-        for mode_str, nlink, owner, group, size, date_str, name, file_mode in rows:
+        for mode_str, nlink, owner, group, size, date_str, name, file_mode, link_target in rows:
             colored = colorize_name(name, file_mode)
             indicator = type_indicator(file_mode) if classify else ""
+            suffix = f" -> {link_target}" if link_target is not None else ""
             print(
                 f"{mode_str} {nlink:{max_nlink}} {owner:{max_owner}} "
-                f"{group:{max_group}} {size:{max_size}} {date_str} {colored}{indicator}"
+                f"{group:{max_group}} {size:{max_size}} {date_str} {colored}{indicator}{suffix}"
             )
 
 
@@ -411,7 +415,8 @@ def parse_args(args):
                             sys.exit(1)
                         break
                     else:
-                        break
+                        print("Error: -C requires a numeric column count. Use --help for usage information.")
+                        sys.exit(1)
                 elif ch in _SHORT_FLAGS:
                     key = _SHORT_FLAGS[ch]
                     if key == 'sort_mtime':
