@@ -43,6 +43,20 @@ def colorize_name(name, mode):
     return name
 
 
+def type_indicator(mode):
+    if stat.S_ISDIR(mode):
+        return "/"
+    if stat.S_ISLNK(mode):
+        return "@"
+    if stat.S_ISFIFO(mode):
+        return "|"
+    if stat.S_ISSOCK(mode):
+        return "="
+    if mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+        return "*"
+    return ""
+
+
 def sort_entries(entries, sort_by, group_dirs_first, reverse=False):
     if sort_by == "mtime":
         entries = sorted(entries, key=lambda e: e.stat(follow_symlinks=False).st_mtime, reverse=not reverse)
@@ -61,20 +75,46 @@ def sort_entries(entries, sort_by, group_dirs_first, reverse=False):
 
 def list_files_and_directories(path, show_hidden=False, verbose=False,
                                 human_readable=False, columns=4,
-                                sort_by="name", group_dirs_first=False, reverse=False):
-    try:
-        with os.scandir(path) as it:
-            entries = [entry for entry in it if show_hidden or not entry.name.startswith(".")]
-    except OSError as exc:
-        print(f"Error reading {path}: {exc}", file=sys.stderr)
-        sys.exit(1)
+                                sort_by="name", group_dirs_first=False,
+                                reverse=False, recursive=False, classify=False,
+                                dirs_only=False):
+    def _list_one(current_path, label, first=True):
+        try:
+            with os.scandir(current_path) as it:
+                entries = [e for e in it if show_hidden or not e.name.startswith(".")]
+        except OSError as exc:
+            print(f"Error reading {current_path}: {exc}", file=sys.stderr)
+            return
 
-    entries = sort_entries(entries, sort_by, group_dirs_first, reverse=reverse)
+        if dirs_only:
+            entries = [e for e in entries if e.is_dir(follow_symlinks=False)]
 
-    if verbose:
-        print_verbose(entries, human_readable=human_readable)
-    else:
-        print_columns(entries, columns)
+        entries = sort_entries(entries, sort_by, group_dirs_first, reverse=reverse)
+
+        if recursive:
+            if not first:
+                print()
+            print(f"{label}:")
+
+        if verbose:
+            print_verbose(entries, human_readable=human_readable, classify=classify)
+        else:
+            print_columns(entries, columns, classify=classify)
+
+        if recursive:
+            subdirs = [
+                e for e in entries
+                if e.is_dir(follow_symlinks=False)
+            ]
+            for sub in subdirs:
+                sub_label = f"{label}/{sub.name}"
+                _list_one(sub.path, sub_label, first=False)
+
+    start_label = "."
+    if os.path.abspath(path) != os.path.abspath(os.getcwd()):
+        start_label = path.rstrip("/")
+
+    _list_one(path, start_label, first=True)
 
 
 def format_size(size):
@@ -91,7 +131,7 @@ def format_size(size):
         return str(size)
 
 
-def print_verbose(entries, human_readable=False):
+def print_verbose(entries, human_readable=False, classify=False):
     if not entries:
         print("total 0")
         return
@@ -129,35 +169,42 @@ def print_verbose(entries, human_readable=False):
         max_size = max(len(s) for s in size_strs)
         for (mode_str, nlink, owner, group, size, date_str, name, file_mode), size_str in zip(rows, size_strs):
             colored = colorize_name(name, file_mode)
+            indicator = type_indicator(file_mode) if classify else ""
             print(
                 f"{mode_str} {nlink:{max_nlink}} {owner:{max_owner}} "
-                f"{group:{max_group}} {size_str:>{max_size}} {date_str} {colored}"
+                f"{group:{max_group}} {size_str:>{max_size}} {date_str} {colored}{indicator}"
             )
     else:
         max_size = max(len(str(row[4])) for row in rows)
         for mode_str, nlink, owner, group, size, date_str, name, file_mode in rows:
             colored = colorize_name(name, file_mode)
+            indicator = type_indicator(file_mode) if classify else ""
             print(
                 f"{mode_str} {nlink:{max_nlink}} {owner:{max_owner}} "
-                f"{group:{max_group}} {size:{max_size}} {date_str} {colored}"
+                f"{group:{max_group}} {size:{max_size}} {date_str} {colored}{indicator}"
             )
 
 
-def print_columns(entries, columns):
+def print_columns(entries, columns, classify=False):
     if not entries:
         return
 
-    names = [entry.name for entry in entries]
-    col_width = max(len(name) for name in names) + 2
-    for start in range(0, len(names), columns):
+    # Column width accounts for the indicator character when -F is active
+    col_width = max(
+        len(entry.name) + len(type_indicator(entry.stat(follow_symlinks=False).st_mode) if classify else "")
+        for entry in entries
+    ) + 2
+    for start in range(0, len(entries), columns):
         row_entries = entries[start:start + columns]
         parts = []
         for entry in row_entries:
             st = entry.stat(follow_symlinks=False)
+            indicator = type_indicator(st.st_mode) if classify else ""
             colored = colorize_name(entry.name, st.st_mode)
-            # Pad by the plain name length so ANSI codes don't break alignment
-            padding = col_width - len(entry.name)
-            parts.append(colored + " " * padding)
+            # Pad by the plain display width so ANSI codes don't break alignment
+            display_len = len(entry.name) + len(indicator)
+            padding = col_width - display_len
+            parts.append(colored + indicator + " " * padding)
         print("".join(parts))
 
 
@@ -228,7 +275,7 @@ def get_rwx(mode):
 
 
 def print_help():
-    print("usage: pyls [--help] [-a] [-l] [-h] [-t] [-S] [-r] [--group-directories-first] [-C [COLUMNS]] [path]")
+    print("usage: pyls [--help] [-a] [-l] [-h] [-F] [-d] [-t] [-S] [-r] [-R] [--group-directories-first] [-C [COLUMNS]] [path]")
     print("List files and directories in a given path")
     print()
     print("positional arguments:")
@@ -240,9 +287,14 @@ def print_help():
     print("  -l, --long                 Show full information for each item")
     print("  -h                         With -l, show file sizes in human-readable form")
     print("                             (e.g. 1.2K, 3.7M, 2.1G) instead of raw bytes")
+    print("  -F                         Append a type indicator to each name:")
+    print("                               /  directory    *  executable")
+    print("                               @  symlink      |  named pipe    =  socket")
+    print("  -d                         List only directories, not their contents")
     print("  -t                         Sort by modification time, newest first")
     print("  -S                         Sort by file size, largest first")
     print("  -r                         Reverse the sort order")
+    print("  -R                         Recursively list subdirectories")
     print("  --group-directories-first  List directories before files")
     print("  -C, --columns [N]          Number of columns for output (default: 4)")
     print()
@@ -264,9 +316,12 @@ _SHORT_FLAGS = {
     'a': 'show_hidden',
     'l': 'verbose',
     'h': 'human_readable',
+    'F': 'classify',
+    'd': 'dirs_only',
     't': 'sort_mtime',
     'S': 'sort_size',
     'r': 'reverse',
+    'R': 'recursive',
 }
 
 
@@ -276,8 +331,11 @@ def parse_args(args):
         'show_hidden': False,
         'verbose': False,
         'human_readable': False,
+        'classify': False,
+        'dirs_only': False,
         'sort_by': 'name',
         'reverse': False,
+        'recursive': False,
         'group_dirs_first': False,
         'columns': 4,
     }
@@ -369,9 +427,12 @@ if __name__ == "__main__":
             show_hidden=opts['show_hidden'],
             verbose=opts['verbose'],
             human_readable=opts['human_readable'],
+            classify=opts['classify'],
+            dirs_only=opts['dirs_only'],
             columns=opts['columns'],
             sort_by=opts['sort_by'],
             reverse=opts['reverse'],
+            recursive=opts['recursive'],
             group_dirs_first=opts['group_dirs_first'],
         )
     except BrokenPipeError:
