@@ -60,6 +60,10 @@ def type_indicator(mode):
 def sort_entries(entries, sort_by, group_dirs_first, reverse=False):
     if sort_by == "mtime":
         entries = sorted(entries, key=lambda e: e.stat(follow_symlinks=False).st_mtime, reverse=not reverse)
+    elif sort_by == "ctime":
+        entries = sorted(entries, key=lambda e: e.stat(follow_symlinks=False).st_ctime, reverse=not reverse)
+    elif sort_by == "atime":
+        entries = sorted(entries, key=lambda e: e.stat(follow_symlinks=False).st_atime, reverse=not reverse)
     elif sort_by == "size":
         entries = sorted(entries, key=lambda e: e.stat(follow_symlinks=False).st_size, reverse=not reverse)
     else:
@@ -74,10 +78,10 @@ def sort_entries(entries, sort_by, group_dirs_first, reverse=False):
 
 
 def list_files_and_directories(path, show_hidden=False, verbose=False,
-                                human_readable=False, columns=4,
-                                sort_by="name", group_dirs_first=False,
-                                reverse=False, recursive=False, classify=False,
-                                dirs_only=False):
+                               human_readable=False, columns=None,
+                               sort_by="name", group_dirs_first=False,
+                               reverse=False, recursive=False, classify=False,
+                               dirs_only=False, use_ctime=False, use_atime=False):
     # -d: show the path itself as a single entry, don't scan its contents
     if dirs_only:
         try:
@@ -116,7 +120,7 @@ def list_files_and_directories(path, show_hidden=False, verbose=False,
             print(f"{label}:")
 
         if verbose:
-            print_verbose(entries, human_readable=human_readable, classify=classify)
+            print_verbose(entries, human_readable=human_readable, classify=classify, use_ctime=use_ctime, use_atime=use_atime)
         else:
             print_columns(entries, columns, classify=classify)
 
@@ -150,7 +154,7 @@ def format_size(size):
         return str(size)
 
 
-def print_verbose(entries, human_readable=False, classify=False):
+def print_verbose(entries, human_readable=False, classify=False, use_ctime=False, use_atime=False):
     if not entries:
         print("total 0")
         return
@@ -172,7 +176,7 @@ def print_verbose(entries, human_readable=False, classify=False):
                 lookup_owner(st.st_uid, uid_cache),
                 lookup_group(st.st_gid, gid_cache),
                 st.st_size,
-                format_mtime(st.st_mtime, current_year),
+                format_mtime(st.st_atime if use_atime else st.st_ctime if use_ctime else st.st_mtime, current_year),
                 entry.name,
                 st.st_mode,
                 link_target,
@@ -212,22 +216,47 @@ def print_columns(entries, columns, classify=False):
     if not entries:
         return
 
-    # Column width accounts for the indicator character when -F is active
-    col_width = max(
+    # Widest display name (plain text, no ANSI) — used for layout math.
+    max_name_len = max(
         len(entry.name) + len(type_indicator(entry.stat(follow_symlinks=False).st_mode) if classify else "")
         for entry in entries
-    ) + 2
+    )
+
+    # Determine terminal width; fall back to 80 when stdout is not a tty
+    # (e.g. piped output) so the caller's explicit -C N is still honoured.
+    try:
+        term_width = os.get_terminal_size().columns
+    except OSError:
+        term_width = 80
+
+    if columns is None:
+        # Auto-detect: pack as many columns as fit, using the widest entry
+        # plus a minimum 2-space gap — the same rule the real ls uses.
+        min_col_width = max_name_len + 2
+        columns = max(1, term_width // min_col_width)
+
+    # Divide terminal width evenly across the requested columns.
+    # Always wide enough to fit the longest name plus one space of breathing room.
+    col_width = max(max_name_len + 1, term_width // columns)
+
     for start in range(0, len(entries), columns):
         row_entries = entries[start:start + columns]
+        last_idx = len(row_entries) - 1
         parts = []
-        for entry in row_entries:
+        for idx, entry in enumerate(row_entries):
             st = entry.stat(follow_symlinks=False)
             indicator = type_indicator(st.st_mode) if classify else ""
             colored = colorize_name(entry.name, st.st_mode)
-            # Pad by the plain display width so ANSI codes don't break alignment
             display_len = len(entry.name) + len(indicator)
-            padding = col_width - display_len
-            parts.append(colored + indicator + " " * padding)
+            if idx < last_idx:
+                # Pad interior columns to keep alignment; ANSI codes are
+                # invisible so we pad by the plain display width only.
+                padding = col_width - display_len
+                parts.append(colored + indicator + " " * padding)
+            else:
+                # Last column: no trailing padding — prevents phantom blank
+                # rows and avoids pushing lines past the terminal edge.
+                parts.append(colored + indicator)
         print("".join(parts))
 
 
@@ -289,8 +318,8 @@ def get_rwx(mode):
         gx = "s" if mode & stat.S_IXGRP else "S"
 
     or_ = "r" if mode & stat.S_IROTH else "-"
-    ow = "w" if mode & stat.S_IWOTH else "-"
-    ox = "x" if mode & stat.S_IXOTH else "-"
+    ow  = "w" if mode & stat.S_IWOTH else "-"
+    ox  = "x" if mode & stat.S_IXOTH else "-"
     if mode & stat.S_ISVTX:
         ox = "t" if mode & stat.S_IXOTH else "T"
 
@@ -298,7 +327,7 @@ def get_rwx(mode):
 
 
 def print_help():
-    print("usage: pyls [--help] [-a] [-l] [-h] [-F] [-d] [-t] [-S] [-r] [-R] [--group-directories-first] [-C [COLUMNS]] [path]")
+    print("usage: pyls [--help] [-a] [-l] [-h] [-F] [-d] [-c] [-u] [-t] [-S] [-r] [-R] [--group-directories-first] [-C [COLUMNS]] [path]")
     print("List files and directories in a given path")
     print()
     print("positional arguments:")
@@ -314,12 +343,20 @@ def print_help():
     print("                               /  directory    *  executable")
     print("                               @  symlink      |  named pipe    =  socket")
     print("  -d                         Show the directory itself, not its contents")
+    print("  -c                         Use ctime (last status change) instead of mtime:")
+    print("                               with -lt: sort by ctime, show ctime")
+    print("                               with -l:  show ctime, sort by name")
+    print("                               otherwise: sort by ctime, newest first")
+    print("  -u                         Use atime (last access time) instead of mtime:")
+    print("                               with -lt: sort by atime, show atime")
+    print("                               with -l:  show atime, sort by name")
+    print("                               otherwise: sort by atime, newest first")
     print("  -t                         Sort by modification time, newest first")
     print("  -S                         Sort by file size, largest first")
     print("  -r                         Reverse the sort order")
     print("  -R                         Recursively list subdirectories")
     print("  --group-directories-first  List directories before files")
-    print("  -C, --columns [N]          Number of columns for output (default: 4)")
+    print("  -C, --columns [N]          Number of columns for output (default: auto)")
     print()
     print("  Short flags can be combined freely, e.g. -lath, -Salt")
     print()
@@ -341,6 +378,8 @@ _SHORT_FLAGS = {
     'h': 'human_readable',
     'F': 'classify',
     'd': 'dirs_only',
+    'c': 'use_ctime',
+    'u': 'use_atime',
     't': 'sort_mtime',
     'S': 'sort_size',
     'r': 'reverse',
@@ -360,7 +399,9 @@ def parse_args(args):
         'reverse': False,
         'recursive': False,
         'group_dirs_first': False,
-        'columns': 4,
+        'columns': None,
+        'use_ctime': False,
+        'use_atime': False,
     }
 
     i = 0
@@ -415,8 +456,8 @@ def parse_args(args):
                             sys.exit(1)
                         break
                     else:
-                        print("Error: -C requires a numeric column count. Use --help for usage information.")
-                        sys.exit(1)
+                        # -C with no number → auto-detect (same as omitting -C)
+                        opts['columns'] = None
                 elif ch in _SHORT_FLAGS:
                     key = _SHORT_FLAGS[ch]
                     if key == 'sort_mtime':
@@ -436,6 +477,22 @@ def parse_args(args):
             opts['path'] = arg
 
         i += 1
+
+    # -c flag: resolve effective sort based on combination with -l and -t.
+    # -clt / -ct : sort by ctime (show ctime)
+    # -cl         : sort by name  (show ctime)
+    # -c          : sort by ctime, newest first (column output)
+    if opts['use_ctime']:
+        if opts['sort_by'] == 'mtime' or not opts['verbose']:
+            opts['sort_by'] = 'ctime'
+        # -c with -l but no -t → sort by name (already the default, no change)
+
+    # -u flag: identical rules to -c but using access time.
+    # When both -c and -u are given, -u wins (last one takes precedence).
+    if opts['use_atime']:
+        if opts['sort_by'] in ('mtime', 'ctime') or not opts['verbose']:
+            opts['sort_by'] = 'atime'
+        # -u with -l but no -t → sort by name (already the default, no change)
 
     return opts
 
@@ -458,6 +515,8 @@ if __name__ == "__main__":
             reverse=opts['reverse'],
             recursive=opts['recursive'],
             group_dirs_first=opts['group_dirs_first'],
+            use_ctime=opts['use_ctime'],
+            use_atime=opts['use_atime'],
         )
     except BrokenPipeError:
         # Downstream consumers like less/head may stop early; exit quietly.
