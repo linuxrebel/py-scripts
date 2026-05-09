@@ -8,16 +8,50 @@ import sys
 import time
 
 
-# ANSI color codes
-_RESET  = "\033[0m"
-_DIR    = "\033[1;34m"   # bold blue    — directories
-_LINK   = "\033[1;36m"   # bold cyan    — symbolic links
-_EXEC   = "\033[1;32m"   # bold green   — executables
-_PIPE   = "\033[33m"     # yellow       — named pipes (FIFOs)
-_SOCK   = "\033[1;35m"   # bold magenta — sockets
-_BLK    = "\033[1;33m"   # bold yellow  — block devices
-_CHR    = "\033[1;33m"   # bold yellow  — character devices
+# ANSI escape helpers
+_RESET = "\033[0m"
 
+def _ansi(code):
+    """Wrap a raw LS_COLORS code string in ESC[ … m, or return '' for 'none'/'00'."""
+    if not code or code in ("0", "00", "none", ""):
+        return ""
+    return f"\033[{code}m"
+
+
+# LS_COLORS key names used by GNU ls for the file types we care about.
+# Keys: di=dir, ln=symlink, pi=fifo, so=socket, bd=block, cd=char, ex=executable
+_LS_COLORS_DEFAULTS = {
+    "di": "1;34",   # bold blue    — directories
+    "ln": "1;36",   # bold cyan    — symbolic links
+    "ex": "1;32",   # bold green   — executables
+    "pi": "33",     # yellow       — named pipes (FIFOs)
+    "so": "1;35",   # bold magenta — sockets
+    "bd": "1;33",   # bold yellow  — block devices
+    "cd": "1;33",   # bold yellow  — character devices
+}
+
+
+def _parse_ls_colors():
+    """
+    Parse $LS_COLORS (colon-separated key=value pairs) and return a dict.
+    Unknown / extension keys (*.py, *.gz, …) are stored but not currently used.
+    Falls back to built-in defaults for any key not present in the env var.
+    If $LS_COLORS is set but empty, colors are disabled for that type (use "").
+    """
+    colors = dict(_LS_COLORS_DEFAULTS)  # start from defaults
+    raw = os.environ.get("LS_COLORS", None)
+    if raw is None:
+        return colors  # env var absent → keep defaults
+    for token in raw.split(":"):
+        token = token.strip()
+        if "=" not in token:
+            continue
+        key, _, value = token.partition("=")
+        colors[key] = value
+    return colors
+
+
+_LS_COLORS = _parse_ls_colors()
 
 # Evaluated once at startup; avoids repeated isatty() syscalls per entry.
 _USE_COLOR = sys.stdout.isatty()
@@ -27,20 +61,25 @@ def colorize_name(name, mode):
     if not _USE_COLOR:
         return name
     if stat.S_ISDIR(mode):
-        return f"{_DIR}{name}{_RESET}"
-    if stat.S_ISLNK(mode):
-        return f"{_LINK}{name}{_RESET}"
-    if stat.S_ISFIFO(mode):
-        return f"{_PIPE}{name}{_RESET}"
-    if stat.S_ISSOCK(mode):
-        return f"{_SOCK}{name}{_RESET}"
-    if stat.S_ISBLK(mode):
-        return f"{_BLK}{name}{_RESET}"
-    if stat.S_ISCHR(mode):
-        return f"{_CHR}{name}{_RESET}"
-    if mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
-        return f"{_EXEC}{name}{_RESET}"
-    return name
+        key = "di"
+    elif stat.S_ISLNK(mode):
+        key = "ln"
+    elif stat.S_ISFIFO(mode):
+        key = "pi"
+    elif stat.S_ISSOCK(mode):
+        key = "so"
+    elif stat.S_ISBLK(mode):
+        key = "bd"
+    elif stat.S_ISCHR(mode):
+        key = "cd"
+    elif mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+        key = "ex"
+    else:
+        return name
+    seq = _ansi(_LS_COLORS.get(key, ""))
+    if not seq:
+        return name
+    return f"{seq}{name}{_RESET}"
 
 
 def type_indicator(mode):
@@ -383,13 +422,24 @@ def print_help():
     print("  Short flags can be combined freely, e.g. -lath, -Salt")
     print()
     print("colors (when output is a terminal):")
-    print("  bold blue                  directories")
-    print("  bold cyan                  symbolic links")
-    print("  bold green                 executables")
-    print("  yellow                     named pipes (FIFOs)")
-    print("  bold magenta               sockets")
-    print("  bold yellow                block/character devices")
+    print("  Colors are read from the LS_COLORS environment variable, which uses")
+    print("  the same colon-separated key=ansi_code format as GNU ls.  For example:")
     print()
+    print("    export LS_COLORS='di=1;34:ln=1;36:ex=1;32:pi=33:so=1;35:bd=1;33:cd=1;33'")
+    print()
+    print("  Recognised keys:")
+    print("    di   directories          ln   symbolic links")
+    print("    ex   executables          pi   named pipes (FIFOs)")
+    print("    so   sockets              bd   block devices")
+    print("    cd   character devices")
+    print()
+    print("  Built-in defaults (used when LS_COLORS is unset):")
+    print("    di=1;34  (bold blue)      ln=1;36  (bold cyan)")
+    print("    ex=1;32  (bold green)     pi=33    (yellow)")
+    print("    so=1;35  (bold magenta)   bd=1;33  (bold yellow)")
+    print("    cd=1;33  (bold yellow)")
+    print()
+    print("  Set a key to '0' or '00' to suppress color for that type.")
     print("  Colors are suppressed automatically when output is piped or redirected.")
 
 
