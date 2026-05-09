@@ -18,30 +18,17 @@ def _ansi(code):
     return f"\033[{code}m"
 
 
-# LS_COLORS key names used by GNU ls for the file types we care about.
-# Keys: di=dir, ln=symlink, pi=fifo, so=socket, bd=block, cd=char, ex=executable
-_LS_COLORS_DEFAULTS = {
-    "di": "1;34",   # bold blue    — directories
-    "ln": "1;36",   # bold cyan    — symbolic links
-    "ex": "1;32",   # bold green   — executables
-    "pi": "33",     # yellow       — named pipes (FIFOs)
-    "so": "1;35",   # bold magenta — sockets
-    "bd": "1;33",   # bold yellow  — block devices
-    "cd": "1;33",   # bold yellow  — character devices
-}
-
-
 def _parse_ls_colors():
     """
     Parse $LS_COLORS (colon-separated key=value pairs) and return a dict.
     Unknown / extension keys (*.py, *.gz, …) are stored but not currently used.
-    Falls back to built-in defaults for any key not present in the env var.
-    If $LS_COLORS is set but empty, colors are disabled for that type (use "").
+    If $LS_COLORS is not set, returns an empty dict (no colors).
+    If $LS_COLORS is set but empty, colors are disabled for all types.
     """
-    colors = dict(_LS_COLORS_DEFAULTS)  # start from defaults
     raw = os.environ.get("LS_COLORS", None)
     if raw is None:
-        return colors  # env var absent → keep defaults
+        return {}  # env var absent → no colors
+    colors = {}
     for token in raw.split(":"):
         token = token.strip()
         if "=" not in token:
@@ -435,12 +422,7 @@ def print_help():
     print("    so   sockets              bd   block devices")
     print("    cd   character devices")
     print()
-    print("  Built-in defaults (used when LS_COLORS is unset):")
-    print("    di=1;34  (bold blue)      ln=1;36  (bold cyan)")
-    print("    ex=1;32  (bold green)     pi=33    (yellow)")
-    print("    so=1;35  (bold magenta)   bd=1;33  (bold yellow)")
-    print("    cd=1;33  (bold yellow)")
-    print()
+    print("  If LS_COLORS is not set, no colors are applied.")
     print("  Set a key to '0' or '00' to suppress color for that type.")
     print("  Colors are suppressed automatically when output is piped or redirected.")
     print("  Use --no-color to disable colors explicitly regardless of terminal state.")
