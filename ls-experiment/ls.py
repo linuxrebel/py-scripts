@@ -81,7 +81,8 @@ def list_files_and_directories(path, show_hidden=False, verbose=False,
                                human_readable=False, columns=None,
                                sort_by="name", group_dirs_first=False,
                                reverse=False, recursive=False, classify=False,
-                               dirs_only=False, use_ctime=False, use_atime=False):
+                               dirs_only=False, use_ctime=False, use_atime=False,
+                               show_inode=False):
     # -d: show the path itself as a single entry, don't scan its contents
     if dirs_only:
         try:
@@ -120,9 +121,9 @@ def list_files_and_directories(path, show_hidden=False, verbose=False,
             print(f"{label}:")
 
         if verbose:
-            print_verbose(entries, human_readable=human_readable, classify=classify, use_ctime=use_ctime, use_atime=use_atime)
+            print_verbose(entries, human_readable=human_readable, classify=classify, use_ctime=use_ctime, use_atime=use_atime, show_inode=show_inode)
         else:
-            print_columns(entries, columns, classify=classify)
+            print_columns(entries, columns, classify=classify, show_inode=show_inode)
 
         if recursive:
             subdirs = [
@@ -154,7 +155,7 @@ def format_size(size):
         return str(size)
 
 
-def print_verbose(entries, human_readable=False, classify=False, use_ctime=False, use_atime=False):
+def print_verbose(entries, human_readable=False, classify=False, use_ctime=False, use_atime=False, show_inode=False):
     if not entries:
         print("total 0")
         return
@@ -171,6 +172,7 @@ def print_verbose(entries, human_readable=False, classify=False, use_ctime=False
         link_target = os.readlink(entry.path) if stat.S_ISLNK(st.st_mode) else None
         rows.append(
             (
+                st.st_ino,
                 get_rwx(st.st_mode),
                 st.st_nlink,
                 lookup_owner(st.st_uid, uid_cache),
@@ -185,42 +187,53 @@ def print_verbose(entries, human_readable=False, classify=False, use_ctime=False
 
     print(f"total {total_blocks // 2}")
 
-    max_nlink = max(len(str(row[1])) for row in rows)
-    max_owner = max(len(row[2]) for row in rows)
-    max_group = max(len(row[3]) for row in rows)
+    max_inode = max(len(str(row[0])) for row in rows) if show_inode else 0
+    max_nlink = max(len(str(row[2])) for row in rows)
+    max_owner = max(len(row[3]) for row in rows)
+    max_group = max(len(row[4]) for row in rows)
 
     if human_readable:
-        size_strs = [format_size(row[4]) for row in rows]
+        size_strs = [format_size(row[5]) for row in rows]
         max_size = max(len(s) for s in size_strs)
-        for (mode_str, nlink, owner, group, size, date_str, name, file_mode, link_target), size_str in zip(rows, size_strs):
+        for (inode, mode_str, nlink, owner, group, size, date_str, name, file_mode, link_target), size_str in zip(rows, size_strs):
             colored = colorize_name(name, file_mode)
             indicator = type_indicator(file_mode) if classify else ""
             suffix = f" -> {link_target}" if link_target is not None else ""
+            inode_prefix = f"{inode:{max_inode}} " if show_inode else ""
             print(
-                f"{mode_str} {nlink:{max_nlink}} {owner:{max_owner}} "
+                f"{inode_prefix}{mode_str} {nlink:{max_nlink}} {owner:{max_owner}} "
                 f"{group:{max_group}} {size_str:>{max_size}} {date_str} {colored}{indicator}{suffix}"
             )
     else:
-        max_size = max(len(str(row[4])) for row in rows)
-        for mode_str, nlink, owner, group, size, date_str, name, file_mode, link_target in rows:
+        max_size = max(len(str(row[5])) for row in rows)
+        for inode, mode_str, nlink, owner, group, size, date_str, name, file_mode, link_target in rows:
             colored = colorize_name(name, file_mode)
             indicator = type_indicator(file_mode) if classify else ""
             suffix = f" -> {link_target}" if link_target is not None else ""
+            inode_prefix = f"{inode:{max_inode}} " if show_inode else ""
             print(
-                f"{mode_str} {nlink:{max_nlink}} {owner:{max_owner}} "
+                f"{inode_prefix}{mode_str} {nlink:{max_nlink}} {owner:{max_owner}} "
                 f"{group:{max_group}} {size:{max_size}} {date_str} {colored}{indicator}{suffix}"
             )
 
 
-def print_columns(entries, columns, classify=False):
+def print_columns(entries, columns, classify=False, show_inode=False):
     if not entries:
         return
+
+    # Inode prefix width: right-aligned number + one space separator.
+    if show_inode:
+        inode_width = max(len(str(e.stat(follow_symlinks=False).st_ino)) for e in entries)
+        inode_prefix_len = inode_width + 1
+    else:
+        inode_width = 0
+        inode_prefix_len = 0
 
     # Widest display name (plain text, no ANSI) — used for layout math.
     max_name_len = max(
         len(entry.name) + len(type_indicator(entry.stat(follow_symlinks=False).st_mode) if classify else "")
         for entry in entries
-    )
+    ) + inode_prefix_len
 
     # Determine terminal width; fall back to 80 when stdout is not a tty
     # (e.g. piped output) so the caller's explicit -C N is still honoured.
@@ -229,15 +242,22 @@ def print_columns(entries, columns, classify=False):
     except OSError:
         term_width = 80
 
-    if columns is None:
-        # Auto-detect: pack as many columns as fit, using the widest entry
-        # plus a minimum 2-space gap — the same rule the real ls uses.
-        min_col_width = max_name_len + 2
-        columns = max(1, term_width // min_col_width)
+    # Maximum columns that fit without wrapping: each column needs at least
+    # the widest name + 2 spaces of gap.
+    min_col_width = max_name_len + 2
+    max_fitting = max(1, term_width // min_col_width)
 
-    # Divide terminal width evenly across the requested columns.
-    # Always wide enough to fit the longest name plus one space of breathing room.
-    col_width = max(max_name_len + 1, term_width // columns)
+    if columns is None:
+        # Auto-detect: pack as many columns as fit.
+        columns = max_fitting
+    else:
+        # Honor explicit -C N: cap at max_fitting (prevents wrapping) but
+        # never inflate — if the user asked for fewer columns, respect that.
+        columns = min(columns, max_fitting)
+
+    # Each column is an equal share of the terminal width, but always at
+    # least wide enough to fit the longest name plus one space gap.
+    col_width = max(min_col_width - 1, term_width // columns)
 
     for start in range(0, len(entries), columns):
         row_entries = entries[start:start + columns]
@@ -247,16 +267,17 @@ def print_columns(entries, columns, classify=False):
             st = entry.stat(follow_symlinks=False)
             indicator = type_indicator(st.st_mode) if classify else ""
             colored = colorize_name(entry.name, st.st_mode)
-            display_len = len(entry.name) + len(indicator)
+            inode_prefix = f"{st.st_ino:>{inode_width}} " if show_inode else ""
+            display_len = inode_prefix_len + len(entry.name) + len(indicator)
             if idx < last_idx:
                 # Pad interior columns to keep alignment; ANSI codes are
                 # invisible so we pad by the plain display width only.
                 padding = col_width - display_len
-                parts.append(colored + indicator + " " * padding)
+                parts.append(inode_prefix + colored + indicator + " " * padding)
             else:
                 # Last column: no trailing padding — prevents phantom blank
                 # rows and avoids pushing lines past the terminal edge.
-                parts.append(colored + indicator)
+                parts.append(inode_prefix + colored + indicator)
         print("".join(parts))
 
 
@@ -327,7 +348,7 @@ def get_rwx(mode):
 
 
 def print_help():
-    print("usage: pyls [--help] [-a] [-l] [-h] [-F] [-d] [-c] [-u] [-t] [-S] [-r] [-R] [--group-directories-first] [-C [COLUMNS]] [path]")
+    print("usage: pyls [--help] [-a] [-l] [-h] [-F] [-i] [-d] [-c] [-u] [-t] [-S] [-r] [-R] [--group-directories-first] [-C [COLUMNS]] [path]")
     print("List files and directories in a given path")
     print()
     print("positional arguments:")
@@ -342,6 +363,7 @@ def print_help():
     print("  -F                         Append a type indicator to each name:")
     print("                               /  directory    *  executable")
     print("                               @  symlink      |  named pipe    =  socket")
+    print("  -i                         Print the inode number of each file")
     print("  -d                         Show the directory itself, not its contents")
     print("  -c                         Use ctime (last status change) instead of mtime:")
     print("                               with -lt: sort by ctime, show ctime")
@@ -378,6 +400,7 @@ _SHORT_FLAGS = {
     'h': 'human_readable',
     'F': 'classify',
     'd': 'dirs_only',
+    'i': 'show_inode',
     'c': 'use_ctime',
     'u': 'use_atime',
     't': 'sort_mtime',
@@ -400,6 +423,7 @@ def parse_args(args):
         'recursive': False,
         'group_dirs_first': False,
         'columns': None,
+        'show_inode': False,
         'use_ctime': False,
         'use_atime': False,
     }
@@ -515,6 +539,7 @@ if __name__ == "__main__":
             reverse=opts['reverse'],
             recursive=opts['recursive'],
             group_dirs_first=opts['group_dirs_first'],
+            show_inode=opts['show_inode'],
             use_ctime=opts['use_ctime'],
             use_atime=opts['use_atime'],
         )
