@@ -54,6 +54,7 @@ def _parse_ls_colors():
 _LS_COLORS = _parse_ls_colors()
 
 # Evaluated once at startup; avoids repeated isatty() syscalls per entry.
+# Can be overridden to False by --no-color.
 _USE_COLOR = sys.stdout.isatty()
 
 
@@ -418,6 +419,7 @@ def print_help():
     print("  -R                         Recursively list subdirectories")
     print("  --group-directories-first  List directories before files")
     print("  -C, --columns [N]          Number of columns for output (default: auto)")
+    print("  --no-color                 Disable color output")
     print()
     print("  Short flags can be combined freely, e.g. -lath, -Salt")
     print()
@@ -441,6 +443,7 @@ def print_help():
     print()
     print("  Set a key to '0' or '00' to suppress color for that type.")
     print("  Colors are suppressed automatically when output is piped or redirected.")
+    print("  Use --no-color to disable colors explicitly regardless of terminal state.")
 
 
 # Single-character flags that consume no extra argument.
@@ -476,6 +479,7 @@ def parse_args(args):
         'show_inode': False,
         'use_ctime': False,
         'use_atime': False,
+        'no_color': False,
     }
 
     i = 0
@@ -502,6 +506,9 @@ def parse_args(args):
                 if opts['columns'] < 1:
                     print("Error: column count must be at least 1.")
                     sys.exit(1)
+
+        elif arg == "--no-color":
+            opts['no_color'] = True
 
         elif arg.startswith("--"):
             print(f"Invalid option: {arg}. Use --help for usage information.")
@@ -573,6 +580,9 @@ def parse_args(args):
 
 if __name__ == "__main__":
     opts = parse_args(sys.argv[1:])
+
+    if opts['no_color']:
+        _USE_COLOR = False
 
     path = opts['path'] if opts['path'] is not None else os.getcwd()
 
